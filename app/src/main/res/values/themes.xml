@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.Watchcat" parent="Theme.Material3.DynamicColors.DayNight.NoActionBar">
+        <item name="android:windowSplashScreenBackground">@color/ic_launcher_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+    </style>
+</resources>
