@@ -9,3 +9,13 @@ Whether you're debugging IoT devices, developing embedded systems, or just explo
 - Free and fully open-source, empowering developers to customize and contribute.
 
 Perfectly suited for developers, sysadmins, network engineers, and tech hobbyists who appreciate simplicity and efficiency—watchcat is your wearable companion for hassle-free message monitoring.
+
+### Seeking Beta Testers for watchcat ###
+I'm looking for beta testers for **watchcat**.
+
+**How to Join:**
+
+- **Step 1:** Join our Google Group: [https://groups.google.com/g/watchcat]
+- **Step 2:** You'll then get access to download the app via the Google Play Store: [https://play.google.com/store/apps/details?id=org.w8dsci.watchcat]
+
+Thanks for your help! Your feedback is greatly appreciated as we refine watchcat.
