@@ -38,12 +38,18 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class NetworkService extends Service {
+    private static final String TAG = NetworkService.class.getSimpleName();
     private static NetworkService theService = null;
     private static final String CHANNEL_ID = "Watchcat_Channel";
+    private static final int DEFAULT_PORT = 12719;
+    private static final int MIN_PORT = 1;
+    private static final int MAX_PORT = 65535;
     private static final String SPP_UUID = "00001101-0000-1000-8000-00805F9B34FB"; // Standard SPP UUID
     private static final UUID UART_SERVICE_UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
     private static final UUID UART_TX_UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
@@ -54,6 +60,7 @@ public class NetworkService extends Service {
     private UDPListener udpListener;
     private BluetoothListener bluetoothListener;
     private BluetoothLeListener bluetoothLeListener;
+    private final AtomicInteger notificationCounter = new AtomicInteger(2);
 
     @Override
     public void onCreate() {
@@ -67,7 +74,12 @@ public class NetworkService extends Service {
 
     public enum Listener {TCP, UDP, SSP, BLE}
 
-    public void startListener(Listener service, int port) {
+    private boolean isValidPort(int port) {
+        return port >= MIN_PORT && port <= MAX_PORT;
+    }
+
+    public synchronized void startListener(Listener service, int port) {
+        stopListener(service);
         switch (service) {
             case TCP:
                 startTCPListener(port);
@@ -86,22 +98,30 @@ public class NetworkService extends Service {
         }
     }
 
-    public void stopListener(Listener service) {
+    public synchronized void stopListener(Listener service) {
         switch (service) {
             case TCP:
-                if (tcpListener != null) tcpListener.stopListening();
+                if (tcpListener != null) {
+                    tcpListener.stopListening();
+                }
                 tcpListener = null;
                 break;
             case UDP:
-                if (udpListener != null) udpListener.stopListening();
+                if (udpListener != null) {
+                    udpListener.stopListening();
+                }
                 udpListener = null;
                 break;
             case SSP:
-                if (bluetoothListener != null) bluetoothListener.stopListening();
+                if (bluetoothListener != null) {
+                    bluetoothListener.stopListening();
+                }
                 bluetoothListener = null;
                 break;
             case BLE:
-                if (bluetoothLeListener != null) bluetoothLeListener.stopListening();
+                if (bluetoothLeListener != null) {
+                    bluetoothLeListener.stopListening();
+                }
                 bluetoothLeListener = null;
                 break;
             default:
@@ -111,40 +131,76 @@ public class NetworkService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if ("START_SERVICE".equals(intent.getAction())) {
-            int tcpPort = intent.getIntExtra("TCPPORT", 12719);
-            int udpPort = intent.getIntExtra("UDPPORT", 12719);
+        if (intent == null) {
+            Log.w(TAG, "Received null intent in onStartCommand");
+            return START_STICKY;
+        }
+
+        String action = intent.getAction();
+        if (action == null) {
+            Log.w(TAG, "Received intent without action in onStartCommand");
+            return START_STICKY;
+        }
+
+        if ("START_SERVICE".equals(action)) {
+            int tcpPort = intent.getIntExtra("TCPPORT", DEFAULT_PORT);
+            int udpPort = intent.getIntExtra("UDPPORT", DEFAULT_PORT);
             createNotificationChannel();
 
-            // Initialize listeners
-            if(intent.getBooleanExtra("Listener.TCP", false))
+            if (intent.getBooleanExtra("Listener.TCP", false)) {
                 startListener(Listener.TCP, tcpPort);
-            if(intent.getBooleanExtra("Listener.UDP", false))
+            }
+            if (intent.getBooleanExtra("Listener.UDP", false)) {
                 startListener(Listener.UDP, udpPort);
-            if(intent.getBooleanExtra("Listener.SSP", false))
+            }
+            if (intent.getBooleanExtra("Listener.SSP", false)) {
                 startListener(Listener.SSP, 0);
-            if(intent.getBooleanExtra("Listener.BLE", false))
+            }
+            if (intent.getBooleanExtra("Listener.BLE", false)) {
                 startListener(Listener.BLE, 0);
+            }
 
-            String contentText = "";
-            if (tcpListener != null) contentText = "TCP,";
-            if (udpListener != null) contentText += "UDP,";
-            if (bluetoothListener != null) contentText += "SSP,";
-            if (bluetoothLeListener != null) contentText += "BLE";
-            if (tcpListener != null || udpListener != null) contentText += "\n";
-            if (tcpListener != null) contentText += "T:"+tcpListener.getListenerPort();
-            if (udpListener != null) contentText += ",U:"+udpListener.getListenerPort();
+            StringBuilder contentBuilder = new StringBuilder();
+            if (tcpListener != null) contentBuilder.append("TCP,");
+            if (udpListener != null) contentBuilder.append("UDP,");
+            if (bluetoothListener != null) contentBuilder.append("SSP,");
+            if (bluetoothLeListener != null) contentBuilder.append("BLE,");
+
+            int length = contentBuilder.length();
+            if (length > 0 && contentBuilder.charAt(length - 1) == ',') {
+                contentBuilder.deleteCharAt(length - 1);
+            }
+
+            StringBuilder portBuilder = new StringBuilder();
+            if (tcpListener != null) {
+                portBuilder.append("T:").append(tcpListener.getListenerPort());
+            }
+            if (udpListener != null) {
+                if (portBuilder.length() > 0) {
+                    portBuilder.append(", ");
+                }
+                portBuilder.append("U:").append(udpListener.getListenerPort());
+            }
+
+            if (portBuilder.length() > 0) {
+                if (contentBuilder.length() > 0) {
+                    contentBuilder.append('\n');
+                }
+                contentBuilder.append(portBuilder);
+            }
+
             Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("LISTENING on: ")
-                    .setContentText(contentText)
+                    .setContentTitle("LISTENING on:")
+                    .setContentText(contentBuilder.toString())
                     .setSmallIcon(R.mipmap.ic_launcher)
                     .setOngoing(true)
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setStyle(new NotificationCompat.BigTextStyle().bigText(contentBuilder.toString()))
                     .addAction(R.mipmap.ic_launcher, "Stop Service", stopServicePendingIntent())
                     .build();
 
             startForeground(1, notification);
-        } else if ("STOP_SERVICE".equals(intent.getAction())) {
+        } else if ("STOP_SERVICE".equals(action)) {
             stopListener(Listener.TCP);
             stopListener(Listener.UDP);
             stopListener(Listener.SSP);
@@ -154,7 +210,7 @@ public class NetworkService extends Service {
             stopSelf();
         }
 
-        return super.onStartCommand(intent, flags, startId);
+        return START_STICKY;
     }
 
     private void createNotificationChannel() {
@@ -165,44 +221,71 @@ public class NetworkService extends Service {
         );
         serviceChannel.setDescription("Notifications from Watchcat Service");
         NotificationManager manager = getSystemService(NotificationManager.class);
-        manager.createNotificationChannel(serviceChannel);
+        if (manager != null) {
+            manager.createNotificationChannel(serviceChannel);
+        } else {
+            Log.w(TAG, "Notification manager is unavailable; channel not created");
+        }
     }
 
     private void startTCPListener(int port) {
-        tcpListener = new TCPListener(port);
-        new Thread(tcpListener).start();
+        if (!isValidPort(port)) {
+            Log.w(TAG, "Invalid TCP port requested: " + port);
+            return;
+        }
+        try {
+            TCPListener listener = new TCPListener(port);
+            tcpListener = listener;
+            new Thread(listener, "Watchcat-TCPListener").start();
+        } catch (IOException e) {
+            Log.w(TAG, "Unable to start TCP listener", e);
+            tcpListener = null;
+        }
     }
 
     private void startUDPListener(int port) {
-        udpListener = new UDPListener(port);
-        new Thread(udpListener).start();
+        if (!isValidPort(port)) {
+            Log.w(TAG, "Invalid UDP port requested: " + port);
+            return;
+        }
+        try {
+            UDPListener listener = new UDPListener(port);
+            udpListener = listener;
+            new Thread(listener, "Watchcat-UDPListener").start();
+        } catch (IOException e) {
+            Log.w(TAG, "Unable to start UDP listener", e);
+            udpListener = null;
+        }
     }
 
     private void startBluetoothListener() {
         try {
-            bluetoothListener = new BluetoothListener();
-            new Thread(bluetoothListener).start();
-        } catch (IOException ignored) {
-
+            BluetoothListener listener = new BluetoothListener();
+            bluetoothListener = listener;
+            new Thread(listener, "Watchcat-SPPListener").start();
+        } catch (IOException e) {
+            Log.w(TAG, "Unable to start Bluetooth SPP listener", e);
+            bluetoothListener = null;
         }
     }
 
     private void startBluetoothLeListener() {
-        bluetoothLeListener = new BluetoothLeListener();
-        new Thread(bluetoothLeListener).start();
+        try {
+            BluetoothLeListener listener = new BluetoothLeListener();
+            bluetoothLeListener = listener;
+            new Thread(listener, "Watchcat-BLEListener").start();
+        } catch (IllegalStateException e) {
+            Log.w(TAG, "Unable to start Bluetooth LE listener", e);
+            bluetoothLeListener = null;
+        }
     }
 
     private class TCPListener extends NetworkListener {
-        private ServerSocket serverSocket;
+        private final ServerSocket serverSocket;
 
-        public TCPListener(int port) {
+        public TCPListener(int port) throws IOException {
             super();
-            try {
-                serverSocket = new ServerSocket(port);
-                serverSocket.getLocalPort();  // Set listen port after server socket is initialized
-            } catch (IOException e) {
-                Log.d(this.getClass().getName(), e.toString());
-            }
+            this.serverSocket = new ServerSocket(port);
         }
 
         public int getListenerPort() {
@@ -212,46 +295,55 @@ public class NetworkService extends Service {
         @Override
         public void stopListening() {
             super.stopListening();
-            try {serverSocket.close();} catch (IOException ignored) {}
+            try {
+                serverSocket.close();
+            } catch (IOException e) {
+                Log.w(TAG, "Error closing TCP server socket", e);
+            }
         }
 
         @Override
         public void run() {
-            try {
-                while (isRunning) {
+            while (isRunning) {
+                try {
                     Socket clientSocket = serverSocket.accept();
-                    handleTCPConnection(clientSocket);
+                    if (clientSocket != null) {
+                        handleTCPConnection(clientSocket);
+                    }
+                } catch (IOException e) {
+                    if (isRunning) {
+                        Log.w(TAG, "TCP listener encountered an error", e);
+                    }
+                    break;
                 }
-            } catch (IOException e) {
-                Log.d(this.getClass().getName(), e.toString());
             }
         }
 
         private void handleTCPConnection(Socket clientSocket) {
-            new Thread(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()))) {
+            Thread thread = new Thread(() -> {
+                try (Socket socket = clientSocket;
+                     BufferedReader reader = new BufferedReader(
+                             new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
                     String message;
                     while ((message = reader.readLine()) != null) {
-                        updateUI("TCP:" + clientSocket.getInetAddress().getHostAddress(), message);
+                        updateUI("TCP:" + socket.getInetAddress().getHostAddress(), message);
                     }
                 } catch (IOException e) {
-                    Log.d(this.getClass().getName(), e.toString());
+                    if (isRunning) {
+                        Log.w(TAG, "Error handling TCP connection", e);
+                    }
                 }
-            }).start();
+            }, "Watchcat-TCPClient");
+            thread.start();
         }
     }
 
     private class UDPListener extends NetworkListener {
-        private DatagramSocket udpSocket;
+        private final DatagramSocket udpSocket;
 
-        public UDPListener(int port) {
+        public UDPListener(int port) throws IOException {
             super();
-            try {
-                udpSocket = new DatagramSocket(port);
-                udpSocket.getLocalPort();  // Set listen port after server socket is initialized
-            } catch (IOException e) {
-                Log.d(this.getClass().getName(), e.toString());
-            }
+            udpSocket = new DatagramSocket(port);
         }
 
         public int getListenerPort() {
@@ -266,59 +358,97 @@ public class NetworkService extends Service {
 
         @Override
         public void run() {
-            try {
-                byte[] buffer = new byte[1024];
-                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                while (isRunning) {
+            byte[] buffer = new byte[1024];
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            while (isRunning && !udpSocket.isClosed()) {
+                try {
+                    packet.setData(buffer);
+                    packet.setLength(buffer.length);
                     udpSocket.receive(packet);
-                    String message = new String(packet.getData(), 0, packet.getLength());
+                    String message = new String(packet.getData(), packet.getOffset(), packet.getLength(), StandardCharsets.UTF_8);
                     updateUI("UDP:" + packet.getAddress().getHostAddress(), message);
+                } catch (IOException e) {
+                    if (isRunning) {
+                        Log.w(TAG, "UDP listener encountered an error", e);
+                    }
                 }
-            } catch (IOException e) {
-                Log.d(this.getClass().getName(), e.toString());
             }
         }
     }
 
     @SuppressLint("MissingPermission")
     private class BluetoothListener extends NetworkListener {
-        private final BluetoothAdapter bluetoothAdapter = ((BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE)).getAdapter();
-        private final BluetoothServerSocket bluetoothServerSocket = bluetoothAdapter.listenUsingRfcommWithServiceRecord("Watchcat SPP", UUID.fromString(SPP_UUID));
+        private final BluetoothServerSocket bluetoothServerSocket;
 
         private BluetoothListener() throws IOException {
+            super();
+            BluetoothManager manager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+            if (manager == null) {
+                throw new IOException("Bluetooth manager unavailable");
+            }
+            BluetoothAdapter adapter = manager.getAdapter();
+            if (adapter == null) {
+                throw new IOException("Bluetooth adapter unavailable");
+            }
+            bluetoothServerSocket = adapter.listenUsingRfcommWithServiceRecord("Watchcat SPP", UUID.fromString(SPP_UUID));
+        }
+
+        @Override
+        public void stopListening() {
+            super.stopListening();
+            try {
+                bluetoothServerSocket.close();
+            } catch (IOException e) {
+                Log.w(TAG, "Error closing Bluetooth SPP server socket", e);
+            }
         }
 
         @Override
         public void run() {
-            try {
-                while (isRunning) {
-                    BluetoothSocket socket = bluetoothServerSocket.accept();
-                    handleBluetoothConnection(socket);
-                }
-            } catch (IOException e) {
-                Log.d(this.getClass().getName(), e.toString());
-            } finally {
+            while (isRunning) {
                 try {
-                    if (bluetoothServerSocket != null) bluetoothServerSocket.close();
-                } catch (IOException ignored) {
+                    BluetoothSocket socket = bluetoothServerSocket.accept();
+                    if (socket != null) {
+                        handleBluetoothConnection(socket);
+                    }
+                } catch (IOException e) {
+                    if (isRunning) {
+                        Log.w(TAG, "Bluetooth SPP listener encountered an error", e);
+                    }
+                    break;
                 }
             }
         }
 
         private void handleBluetoothConnection(BluetoothSocket socket) {
-            new Thread(() -> {
+            Thread thread = new Thread(() -> {
+                InputStream inputStream = null;
                 try {
-                    InputStream inputStream = socket.getInputStream();
+                    inputStream = socket.getInputStream();
                     byte[] buffer = new byte[1024];
                     int bytes;
                     while ((bytes = inputStream.read(buffer)) != -1) {
-                        String message = new String(buffer, 0, bytes);
+                        String message = new String(buffer, 0, bytes, StandardCharsets.UTF_8);
                         updateUI("SPP:" + socket.getRemoteDevice().getAddress(), message);
                     }
                 } catch (IOException e) {
-                    Log.d(this.getClass().getName(), e.toString());
+                    if (isRunning) {
+                        Log.w(TAG, "Error handling Bluetooth SPP connection", e);
+                    }
+                } finally {
+                    if (inputStream != null) {
+                        try {
+                            inputStream.close();
+                        } catch (IOException ignored) {
+                        }
+                    }
+                    try {
+                        socket.close();
+                    } catch (IOException ignored) {
+                    }
                 }
-            }).start();
+            }, "Watchcat-SPPClient");
+            thread.start();
         }
     }
 
@@ -328,70 +458,78 @@ public class NetworkService extends Service {
         private final BluetoothGattServer gattServer;
         private final BluetoothGattService uartService = new BluetoothGattService(UART_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY);
 
-        // Start advertising with a callback to handle events
         private final AdvertiseCallback advertiseCallback = new AdvertiseCallback() {
             @Override
             public void onStartSuccess(AdvertiseSettings settingsInEffect) {
                 super.onStartSuccess(settingsInEffect);
-                // Successfully started advertising
-                Log.d("BluetoothLeListener", "Advertising started successfully.");
+                Log.d(TAG, "Bluetooth LE advertising started successfully.");
             }
 
             @Override
             public void onStartFailure(int errorCode) {
                 super.onStartFailure(errorCode);
-                // Failed to start advertising
-                Log.d("BluetoothLeListener", "Advertising failed with error code: " + errorCode);
+                Log.w(TAG, "Bluetooth LE advertising failed with error code: " + errorCode);
             }
         };
 
         public BluetoothLeListener() {
             super();
             BluetoothManager bluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
-            bluetoothLeAdvertiser = bluetoothManager.getAdapter().getBluetoothLeAdvertiser();
+            if (bluetoothManager == null) {
+                throw new IllegalStateException("Bluetooth manager unavailable");
+            }
+            BluetoothAdapter adapter = bluetoothManager.getAdapter();
+            if (adapter == null) {
+                throw new IllegalStateException("Bluetooth adapter unavailable");
+            }
+            bluetoothLeAdvertiser = adapter.getBluetoothLeAdvertiser();
+            if (bluetoothLeAdvertiser == null) {
+                throw new IllegalStateException("Bluetooth LE advertising is not supported on this device");
+            }
             gattServer = bluetoothManager.openGattServer(NetworkService.this, new BluetoothGattServerCallback() {
                 @Override
                 public void onCharacteristicWriteRequest(BluetoothDevice device, int requestId, BluetoothGattCharacteristic characteristic, boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
                     super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value);
-                    // Handle incoming write requests here if needed
-                    updateUI(device.getAlias(), new String(value));
+                    if (value != null) {
+                        updateUI(getDeviceAlias(device), new String(value, StandardCharsets.UTF_8));
+                    }
                     gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null);
                 }
 
                 @Override
                 public void onDescriptorWriteRequest(BluetoothDevice device, int requestId, BluetoothGattDescriptor descriptor, boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
                     if (Arrays.equals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, value)) {
-                        Log.d("BluetoothLeListener", "Notifications enabled for " + descriptor.getCharacteristic().getUuid());
+                        Log.d(TAG, "Notifications enabled for " + descriptor.getCharacteristic().getUuid());
                     } else if (Arrays.equals(BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE, value)) {
-                        Log.d("BluetoothLeListener", "Notifications disabled for " + descriptor.getCharacteristic().getUuid());
+                        Log.d(TAG, "Notifications disabled for " + descriptor.getCharacteristic().getUuid());
                     }
                     gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null);
                 }
             });
+            if (gattServer == null) {
+                throw new IllegalStateException("Unable to open GATT server");
+            }
         }
 
         @Override
         public void run() {
-            // Create TX Characteristic with proper permissions and properties
             BluetoothGattCharacteristic txCharacteristic = new BluetoothGattCharacteristic(
                     UART_TX_UUID,
                     BluetoothGattCharacteristic.PROPERTY_READ | BluetoothGattCharacteristic.PROPERTY_NOTIFY,
                     BluetoothGattCharacteristic.PERMISSION_READ);
 
-            // Create RX Characteristic with proper permissions and properties
             BluetoothGattCharacteristic rxCharacteristic = new BluetoothGattCharacteristic(
                     UART_RX_UUID,
                     BluetoothGattCharacteristic.PROPERTY_WRITE | BluetoothGattCharacteristic.PROPERTY_NOTIFY,
                     BluetoothGattCharacteristic.PERMISSION_WRITE);
 
-            // Add CCCD descriptor for notifications
             BluetoothGattDescriptor txCccd = new BluetoothGattDescriptor(
-                    UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // CCCD UUID
+                    UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"),
                     BluetoothGattDescriptor.PERMISSION_READ | BluetoothGattDescriptor.PERMISSION_WRITE);
             txCharacteristic.addDescriptor(txCccd);
 
             BluetoothGattDescriptor rxCccd = new BluetoothGattDescriptor(
-                    UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"), // CCCD UUID
+                    UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"),
                     BluetoothGattDescriptor.PERMISSION_READ | BluetoothGattDescriptor.PERMISSION_WRITE);
             rxCharacteristic.addDescriptor(rxCccd);
 
@@ -403,7 +541,7 @@ public class NetworkService extends Service {
             AdvertiseSettings settings = new AdvertiseSettings.Builder()
                     .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                     .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-                    .setConnectable(true) // Allow connections to other devices
+                    .setConnectable(true)
                     .build();
 
             AdvertiseData advertiseData = new AdvertiseData.Builder()
@@ -416,8 +554,15 @@ public class NetworkService extends Service {
         @Override
         public void stopListening() {
             super.stopListening();
-            bluetoothLeAdvertiser.stopAdvertising(advertiseCallback);
-            gattServer.removeService(uartService);
+            try {
+                bluetoothLeAdvertiser.stopAdvertising(advertiseCallback);
+            } catch (IllegalStateException e) {
+                Log.w(TAG, "Failed to stop Bluetooth LE advertising", e);
+            }
+            try {
+                gattServer.removeService(uartService);
+            } catch (IllegalArgumentException ignored) {
+            }
             gattServer.close();
         }
     }
@@ -425,14 +570,12 @@ public class NetworkService extends Service {
 
     // Base class to handle thread control
     private abstract static class NetworkListener implements Runnable {
-        protected boolean isRunning = true;
+        protected volatile boolean isRunning = true;
 
         public void stopListening() {
             isRunning = false;
         }
     }
-
-    private int notifyId = 2;
 
     private void updateUI(String title, String message) {
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
@@ -440,21 +583,51 @@ public class NetworkService extends Service {
                 .setContentText(message)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(message))
                 .build();
 
         NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        notificationManager.notify(notifyId++, notification);
+        if (notificationManager != null) {
+            notificationManager.notify(notificationCounter.getAndIncrement(), notification);
+        } else {
+            Log.w(TAG, "Notification manager unavailable; unable to update UI");
+        }
+    }
+
+    private String getDeviceAlias(@Nullable BluetoothDevice device) {
+        if (device == null) {
+            return "Unknown device";
+        }
+        try {
+            String alias = device.getAlias();
+            if (alias != null && !alias.isEmpty()) {
+                return alias;
+            }
+        } catch (SecurityException e) {
+            Log.w(TAG, "Unable to access Bluetooth device alias", e);
+        }
+        String name = device.getName();
+        if (name != null && !name.isEmpty()) {
+            return name;
+        }
+        return device.getAddress();
     }
 
     private PendingIntent stopServicePendingIntent() {
         Intent stopIntent = new Intent(this, NetworkService.class);
         stopIntent.setAction("STOP_SERVICE");
-        return PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE);
+        return PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        theService = null;
     }
 }

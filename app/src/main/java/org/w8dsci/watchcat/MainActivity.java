@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 
 import androidx.annotation.NonNull;
@@ -43,49 +44,41 @@ public class MainActivity extends AppCompatActivity {
         NestedScrollView scrollView = findViewById(R.id.scrollView);
         scrollView.requestFocus(); // Ensure NestedScrollView gets focus on startup
 
-        String[] permissions = {
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_ADVERTISE,
-                Manifest.permission.POST_NOTIFICATIONS
-        };
-        permissionsCheckAndRequest(this, permissions);
+        permissionsCheckAndRequest(this);
     }
 
-    private void permissionsCheckAndRequest(@NonNull Activity context, @NonNull String[] permissions) {
-        for (String permission : permissions) {
+    private void permissionsCheckAndRequest(@NonNull Activity context) {
+        java.util.ArrayList<String> requiredPermissions = new java.util.ArrayList<>();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT);
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_ADVERTISE);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requiredPermissions.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+
+        if (requiredPermissions.isEmpty()) {
+            return;
+        }
+
+        java.util.ArrayList<String> missingPermissions = new java.util.ArrayList<>();
+        for (String permission : requiredPermissions) {
             if (ActivityCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(context, permissions, 1);
-                return;
+                missingPermissions.add(permission);
             }
+        }
+
+        if (!missingPermissions.isEmpty()) {
+            ActivityCompat.requestPermissions(context, missingPermissions.toArray(new String[0]), 1);
         }
     }
 
     public void startService(View view) {
 
         Intent serviceIntent = new Intent(this, NetworkService.class);
-        if (tcpPortInput.getText().length() > 0) {
-            int port;
-            try {
-                port = Integer.parseInt(tcpPortInput.getText().toString());
-                // Start the service to listen on the given port
-                serviceIntent.putExtra("TCPPORT", port);
-            } catch (NumberFormatException e) {
-                Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show();
-                return;
-            }
-        }
-
-        if (udpPortInput.getText().length() > 0) {
-            int port;
-            try {
-                port = Integer.parseInt(udpPortInput.getText().toString());
-                // Start the service to listen on the given port
-                serviceIntent.putExtra("UDPPORT", port);
-            } catch (NumberFormatException e) {
-                Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show();
-                return;
-            }
-        }
+        if (!applyPortExtra(tcpPortInput, "TCPPORT", serviceIntent)) return;
+        if (!applyPortExtra(udpPortInput, "UDPPORT", serviceIntent)) return;
 
         serviceIntent.putExtra("Listener.TCP", switchTCP.isChecked());
         serviceIntent.putExtra("Listener.UDP", switchUDP.isChecked());
@@ -95,10 +88,33 @@ public class MainActivity extends AppCompatActivity {
         android.content.ComponentName serviceName = startService(serviceIntent);
         if (serviceName == null) {
             Toast.makeText(this, "Failed to start service", Toast.LENGTH_SHORT).show();
-        }else {
+        } else {
             Toast.makeText(this, "Service starting...", Toast.LENGTH_SHORT).show();
             // Close the activity (send the app to the background)
             finish();
         }
+    }
+
+    private boolean applyPortExtra(@NonNull EditText input, @NonNull String extraKey, @NonNull Intent intent) {
+        String portText = input.getText().toString().trim();
+        if (portText.isEmpty()) {
+            return true;
+        }
+
+        int port;
+        try {
+            port = Integer.parseInt(portText);
+        } catch (NumberFormatException e) {
+            Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        if (port < 1 || port > 65535) {
+            Toast.makeText(this, "Port must be between 1 and 65535", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        intent.putExtra(extraKey, port);
+        return true;
     }
 }
